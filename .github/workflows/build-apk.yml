@@ -12,10 +12,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -33,6 +33,39 @@ jobs:
         working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
         run: flutter create . --platforms=android
 
+      - name: Add ML Kit text recognition dependencies
+        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
+        shell: bash
+        run: |
+          if [[ -f android/app/build.gradle.kts ]]; then
+            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 23/' android/app/build.gradle.kts
+            cat >> android/app/build.gradle.kts <<'EOF'
+
+          dependencies {
+              implementation("com.google.mlkit:text-recognition:16.0.1")
+              implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+              implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
+              implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
+              implementation("com.google.mlkit:text-recognition-korean:16.0.1")
+          }
+          EOF
+          elif [[ -f android/app/build.gradle ]]; then
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle
+            cat >> android/app/build.gradle <<'EOF'
+
+          dependencies {
+              implementation 'com.google.mlkit:text-recognition:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
+              implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
+          }
+          EOF
+          else
+            echo "Android Gradle file not found"
+            exit 1
+          fi
+
       - name: Install dependencies
         working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
         run: flutter pub get
@@ -42,7 +75,8 @@ jobs:
         run: flutter build apk --release
 
       - name: Upload APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ALBYATE-APK
           path: source/ALBYATE_FOR_SOLAR_INVERTER/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
