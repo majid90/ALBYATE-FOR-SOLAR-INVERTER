@@ -1,82 +1,30 @@
+
 name: Build ALBYATE APK
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
-    runs-on: ubuntu-24.04
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Java
-        uses: actions/setup-java@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
           channel: stable
-
-      - name: Extract project
+          cache: true
+      - name: Prepare Android project
         run: |
-          unzip -q ALBYATE_FOR_SOLAR_INVERTER_source.zip -d source
-
-      - name: Generate Android project
-        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
-        run: flutter create . --platforms=android
-
-      - name: Add ML Kit text recognition dependencies
-        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
-        shell: bash
-        run: |
-          if [[ -f android/app/build.gradle.kts ]]; then
-            sed -i 's/minSdk = flutter.minSdkVersion/minSdk = 23/' android/app/build.gradle.kts
-            cat >> android/app/build.gradle.kts <<'EOF'
-
-          dependencies {
-              implementation("com.google.mlkit:text-recognition:16.0.1")
-              implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
-              implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
-              implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
-              implementation("com.google.mlkit:text-recognition-korean:16.0.1")
-          }
-          EOF
-          elif [[ -f android/app/build.gradle ]]; then
-            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 23/' android/app/build.gradle
-            cat >> android/app/build.gradle <<'EOF'
-
-          dependencies {
-              implementation 'com.google.mlkit:text-recognition:16.0.1'
-              implementation 'com.google.mlkit:text-recognition-chinese:16.0.1'
-              implementation 'com.google.mlkit:text-recognition-devanagari:16.0.1'
-              implementation 'com.google.mlkit:text-recognition-japanese:16.0.1'
-              implementation 'com.google.mlkit:text-recognition-korean:16.0.1'
-          }
-          EOF
-          else
-            echo "Android Gradle file not found"
-            exit 1
-          fi
-
-      - name: Install dependencies
-        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
-        run: flutter pub get
-
-      - name: Build APK
-        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
-        run: flutter build apk --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v7
+          flutter create . --platforms=android --project-name albyate_for_solar_inverter --org com.albyate
+          flutter pub get
+      - name: Build debug APK
+        run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-APK
-          path: source/ALBYATE_FOR_SOLAR_INVERTER/build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
+          name: ALBYATE-debug-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
+  
