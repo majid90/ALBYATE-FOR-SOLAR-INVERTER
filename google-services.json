@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "424242379675",
+    "project_id": "albyate-solar-inverter",
+    "storage_bucket": "albyate-solar-inverter.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:424242379675:android:b07418a1196eec0903ff3e",
+        "android_client_info": {
+          "package_name": "com.albyate.solarinverter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAvz3RMJQ4UzxcV6g0DXPAwKMHrzU5kXy8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
