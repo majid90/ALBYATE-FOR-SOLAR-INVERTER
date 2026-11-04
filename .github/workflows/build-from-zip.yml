@@ -1,0 +1,87 @@
+
+name: Build APK From ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="ALBYATE_v0_3_2_READY_FOR_GITHUB.zip"
+          test -f "$ZIP"
+          mkdir -p extracted
+          unzip -q "$ZIP" -d extracted
+          test -f extracted/pubspec.yaml
+          test -d extracted/android
+          cp -a extracted/. ./
+          rm -rf extracted
+
+      - name: Install Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Restore Gradle Wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f android/gradlew ] || \
+             [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+            mkdir -p /tmp/albyate_scaffold
+            flutter create --no-pub \
+              --platforms=android \
+              --org com.albyate \
+              --project-name albyate_for_solar_inverter \
+              /tmp/albyate_scaffold
+            cp /tmp/albyate_scaffold/android/gradlew android/gradlew
+            cp /tmp/albyate_scaffold/android/gradlew.bat android/gradlew.bat
+            mkdir -p android/gradle/wrapper
+            cp /tmp/albyate_scaffold/android/gradle/wrapper/gradle-wrapper.jar \
+              android/gradle/wrapper/gradle-wrapper.jar
+          fi
+          chmod +x android/gradlew
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        shell: bash
+        run: |
+          set -o pipefail
+          flutter build apk --debug 2>&1 | tee build-apk.log
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALBYATE-Android-APK
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload error log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALBYATE-Build-Errors
+          path: build-apk.log
+          if-no-files-found: ignore
