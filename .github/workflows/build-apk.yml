@@ -1,0 +1,48 @@
+name: Build ALBYATE APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Extract project
+        run: |
+          unzip -q ALBYATE_FOR_SOLAR_INVERTER_source.zip -d source
+
+      - name: Generate Android project
+        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
+        run: flutter create . --platforms=android
+
+      - name: Install dependencies
+        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: source/ALBYATE_FOR_SOLAR_INVERTER
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALBYATE-APK
+          path: source/ALBYATE_FOR_SOLAR_INVERTER/build/app/outputs/flutter-apk/app-release.apk
