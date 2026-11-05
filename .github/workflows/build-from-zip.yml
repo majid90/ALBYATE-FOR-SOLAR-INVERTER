@@ -1,5 +1,5 @@
 
-name: Build ALBYATE APK
+name: Build ALBYATE APK From Repaired ZIP
 
 on:
   workflow_dispatch:
@@ -16,17 +16,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract project
+      - name: Extract repaired project
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="ALBYATE_v0_3_2_READY_FOR_GITHUB.zip"
-          test -f "$ZIP"
-          mkdir -p /tmp/albyate
-          unzip -q "$ZIP" -d /tmp/albyate
-          test -f /tmp/albyate/pubspec.yaml
-          test -f /tmp/albyate/android/settings.gradle.kts
-          cp -a /tmp/albyate/. ./
+
+          ZIP="ALBYATE_v0_3_2_REPAIRED_v2.zip"
+
+          test -f "$ZIP" || {
+            echo "ERROR: Repaired ZIP not found"
+            exit 1
+          }
+
+          mkdir -p /tmp/albyate_repaired
+          unzip -q "$ZIP" -d /tmp/albyate_repaired
+
+          test -f /tmp/albyate_repaired/pubspec.yaml
+          test -f /tmp/albyate_repaired/android/settings.gradle.kts
+          test -f /tmp/albyate_repaired/android/app/build.gradle.kts
+
+          cp -a /tmp/albyate_repaired/. ./
+
+          echo "Repaired project extracted successfully"
 
       - name: Install Java 17
         uses: actions/setup-java@v4
@@ -40,7 +51,7 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Configure Android build tools
+      - name: Restore Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
@@ -49,81 +60,73 @@ jobs:
             --platforms=android \
             --org com.albyate \
             --project-name albyate_for_solar_inverter \
-            /tmp/albyate_template
-
-          cp /tmp/albyate_template/android/gradlew android/gradlew
-          cp /tmp/albyate_template/android/gradlew.bat android/gradlew.bat
+            /tmp/albyate_scaffold
 
           mkdir -p android/gradle/wrapper
 
-          cp /tmp/albyate_template/android/gradle/wrapper/gradle-wrapper.jar \
+          cp /tmp/albyate_scaffold/android/gradlew \
+            android/gradlew
+
+          cp /tmp/albyate_scaffold/android/gradlew.bat \
+            android/gradlew.bat
+
+          cp /tmp/albyate_scaffold/android/gradle/wrapper/gradle-wrapper.jar \
             android/gradle/wrapper/gradle-wrapper.jar
 
           chmod +x android/gradlew
 
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          wrapper = Path(
-              "android/gradle/wrapper/gradle-wrapper.properties"
-          )
-          settings = Path("android/settings.gradle.kts")
-
-          text = wrapper.read_text()
-          text, count = re.subn(
-              r"gradle-[0-9.]+-(?:all|bin)\.zip",
-              "gradle-8.14-all.zip",
-              text,
-          )
-          if count != 1:
-              raise RuntimeError("Gradle wrapper version not found")
-          wrapper.write_text(text)
-
-          text = settings.read_text()
-
-          versions = {
-              "com.android.application": "8.11.1",
-              "org.jetbrains.kotlin.android": "2.2.20",
-          }
-
-          for plugin, version in versions.items():
-              pattern = (
-                  r'(id\("' + re.escape(plugin) +
-                  r'"\)\s+version\s+")[^"]+(")'
-              )
-              text, count = re.subn(
-                  pattern,
-                  lambda m: m.group(1) + version + m.group(2),
-                  text,
-              )
-              if count != 1:
-                  raise RuntimeError(
-                      "Plugin declaration not found: " + plugin
-                  )
-
-          settings.write_text(text)
-
-          print(wrapper.read_text())
-          print(settings.read_text())
-          PY
-
-      - name: Check versions
+      - name: Verify project configuration
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Android Gradle Plugin:"
+          grep 'com.android.application' \
+            android/settings.gradle.kts
+
+          echo "Kotlin:"
+          grep 'org.jetbrains.kotlin.android' \
+            android/settings.gradle.kts
+
+          echo "Firebase Auth override:"
+          grep 'firebase-auth:23.2.1' \
+            android/app/build.gradle.kts
+
+          echo "Gradle:"
+          cat android/gradle/wrapper/gradle-wrapper.properties
+
           flutter --version
           java -version
-          cd android
-          ./gradlew --version
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Check Firebase dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd android
+
+          ./gradlew :app:dependencies \
+            --configuration debugRuntimeClasspath \
+            > ../resolved-dependencies.txt
+
+          grep 'firebase-auth' \
+            ../resolved-dependencies.txt || true
+
+          if grep -E \
+            'com.google.firebase:firebase-auth:25\.[0-9.]+$' \
+            ../resolved-dependencies.txt; then
+            echo "ERROR: Incompatible Firebase Auth resolved"
+            exit 1
+          fi
 
       - name: Build APK
         shell: bash
         run: |
           set -o pipefail
+
           flutter build apk --debug \
             2>&1 | tee build-apk.log
 
@@ -131,7 +134,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-APK
+          name: ALBYATE-v0.3.2-APK
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 30
@@ -140,10 +143,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-BUILD-ERRORS
+          name: ALBYATE-BUILD-DIAGNOSTICS
           path: |
             build-apk.log
+            resolved-dependencies.txt
             android/settings.gradle.kts
             android/app/build.gradle.kts
-            android/gradle/wrapper/gradle-wrapper.properties
           if-no-files-found: ignore
