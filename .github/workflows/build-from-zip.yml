@@ -1,5 +1,5 @@
 
-name: Build APK From ZIP
+name: Build ALBYATE APK
 
 on:
   workflow_dispatch:
@@ -8,134 +8,156 @@ permissions:
   contents: read
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Extract ALBYATE project
+      - name: Extract ZIP
         shell: bash
         run: |
           set -euo pipefail
-
           ZIP="ALBYATE_v0_3_2_READY_FOR_GITHUB.zip"
-
           test -f "$ZIP"
-          mkdir -p extracted
-          unzip -q "$ZIP" -d extracted
+          mkdir -p /tmp/albyate_source
+          unzip -q "$ZIP" -d /tmp/albyate_source
+          test -f /tmp/albyate_source/pubspec.yaml
+          test -f /tmp/albyate_source/android/settings.gradle.kts
+          cp -a /tmp/albyate_source/. ./
 
-          test -f extracted/pubspec.yaml
-          test -f extracted/android/settings.gradle.kts
-
-          cp -a extracted/. ./
-          rm -rf extracted
-
-      - name: Install Java 17
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Flutter
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Restore Gradle Wrapper
+      - name: Prepare compatible Android build tools
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ ! -f android/gradlew ] || \
-             [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+          flutter create --no-pub \
+            --platforms=android \
+            --org com.albyate \
+            --project-name albyate_for_solar_inverter \
+            /tmp/albyate_template
 
-            flutter create --no-pub \
-              --platforms=android \
-              --org com.albyate \
-              --project-name albyate_for_solar_inverter \
-              /tmp/albyate_scaffold
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
 
-            cp /tmp/albyate_scaffold/android/gradlew \
-              android/gradlew
+          original = Path("android")
+          template = Path("/tmp/albyate_template/android")
 
-            cp /tmp/albyate_scaffold/android/gradlew.bat \
-              android/gradlew.bat
+          src = (template / "settings.gradle.kts").read_text()
+          dst_path = original / "settings.gradle.kts"
+          dst = dst_path.read_text()
 
-            mkdir -p android/gradle/wrapper
+          for plugin in (
+              "com.android.application",
+              "org.jetbrains.kotlin.android",
+          ):
+              pattern = (
+                  r'id\("' + re.escape(plugin) +
+                  r'"\)\s+version\s+"([^"]+)"'
+              )
+              found = re.search(pattern, src)
+              if not found:
+                  raise RuntimeError(
+                      "Missing template plugin: " + plugin
+                  )
+              version = found.group(1)
+              dst, count = re.subn(
+                  pattern,
+                  lambda m: m.group(0).replace(
+                      m.group(1), version
+                  ),
+                  dst,
+                  count=1,
+              )
+              if count != 1:
+                  raise RuntimeError(
+                      "Missing project plugin: " + plugin
+                  )
+              print(plugin, version)
 
-            cp /tmp/albyate_scaffold/android/gradle/wrapper/gradle-wrapper.jar \
-              android/gradle/wrapper/gradle-wrapper.jar
-          fi
+          dst_path.write_text(dst)
+
+          wrapper = original / "gradle/wrapper"
+          template_wrapper = template / "gradle/wrapper"
+          wrapper.mkdir(parents=True, exist_ok=True)
+
+          import shutil
+          for name in (
+              "gradlew",
+              "gradlew.bat",
+          ):
+              shutil.copy2(template / name, original / name)
+
+          for name in (
+              "gradle-wrapper.jar",
+              "gradle-wrapper.properties",
+          ):
+              shutil.copy2(
+                  template_wrapper / name,
+                  wrapper / name,
+              )
+
+          print(
+              (wrapper / "gradle-wrapper.properties")
+              .read_text()
+          )
+          PY
 
           chmod +x android/gradlew
 
-      - name: Fix Gradle AGP and Kotlin
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
-          SETTINGS="android/settings.gradle.kts"
-
-          test -f "$WRAPPER"
-          test -f "$SETTINGS"
-
-          sed -i -E \
-            's#gradle-[0-9.]+-(all|bin)\.zip#gradle-8.14-all.zip#g' \
-            "$WRAPPER"
-
-          sed -i -E \
-            's/(id\("com.android.application"\) version ")[^"]+/\18.11.1/' \
-            "$SETTINGS"
-
-          sed -i -E \
-            's/(id\("org.jetbrains.kotlin.android"\) version ")[^"]+/\12.2.20/' \
-            "$SETTINGS"
-
-          echo "Gradle version:"
-          grep 'gradle-8.14-all.zip' "$WRAPPER"
-
-          echo "Android Gradle Plugin:"
-          grep 'com.android.application' "$SETTINGS"
-
-          echo "Kotlin version:"
-          grep 'org.jetbrains.kotlin.android' "$SETTINGS"
-
-      - name: Show build environment
+      - name: Verify versions
         shell: bash
         run: |
           flutter --version
           java -version
+          grep 'com.android.application' \
+            android/settings.gradle.kts
+          grep 'org.jetbrains.kotlin.android' \
+            android/settings.gradle.kts
           cd android
           ./gradlew --version
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Android APK
+      - name: Build debug APK
         shell: bash
         run: |
           set -o pipefail
-          flutter build apk --debug 2>&1 | tee build-apk.log
+          flutter build apk --debug \
+            2>&1 | tee build-apk.log
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-Android-APK
+          name: ALBYATE-APK
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload error log
+      - name: Upload diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-Build-Errors
-          path: build-apk.log
+          name: ALBYATE-BUILD-ERRORS
+          path: |
+            build-apk.log
+            android/settings.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
           if-no-files-found: ignore
-
