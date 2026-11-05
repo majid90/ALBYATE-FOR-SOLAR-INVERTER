@@ -20,12 +20,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           ZIP="ALBYATE_v0_3_2_READY_FOR_GITHUB.zip"
+
           test -f "$ZIP"
           mkdir -p extracted
           unzip -q "$ZIP" -d extracted
+
           test -f extracted/pubspec.yaml
           test -d extracted/android
+
           cp -a extracted/. ./
           rm -rf extracted
 
@@ -45,23 +49,56 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [ ! -f android/gradlew ] || \
              [ ! -f android/gradle/wrapper/gradle-wrapper.jar ]; then
+
             mkdir -p /tmp/albyate_scaffold
+
             flutter create --no-pub \
               --platforms=android \
               --org com.albyate \
               --project-name albyate_for_solar_inverter \
               /tmp/albyate_scaffold
-            cp /tmp/albyate_scaffold/android/gradlew android/gradlew
-            cp /tmp/albyate_scaffold/android/gradlew.bat android/gradlew.bat
+
+            cp /tmp/albyate_scaffold/android/gradlew \
+              android/gradlew
+
+            cp /tmp/albyate_scaffold/android/gradlew.bat \
+              android/gradlew.bat
+
             mkdir -p android/gradle/wrapper
+
             cp /tmp/albyate_scaffold/android/gradle/wrapper/gradle-wrapper.jar \
               android/gradle/wrapper/gradle-wrapper.jar
           fi
+
           chmod +x android/gradlew
 
-      - name: Install dependencies
+      - name: Upgrade Gradle to 8.14
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
+
+          test -f "$WRAPPER"
+
+          sed -i -E \
+            's#gradle-[0-9.]+-(all|bin)\.zip#gradle-8.14-all.zip#g' \
+            "$WRAPPER"
+
+          grep 'gradle-8.14-all.zip' "$WRAPPER"
+
+      - name: Show build environment
+        shell: bash
+        run: |
+          flutter --version
+          java -version
+          cd android
+          ./gradlew --version
+
+      - name: Install Flutter dependencies
         run: flutter pub get
 
       - name: Build Android APK
@@ -77,11 +114,13 @@ jobs:
           name: ALBYATE-Android-APK
           path: build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
+          retention-days: 30
 
-      - name: Upload error log
+      - name: Upload build errors
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ALBYATE-Build-Errors
           path: build-apk.log
           if-no-files-found: ignore
+
