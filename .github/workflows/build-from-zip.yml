@@ -1,17 +1,19 @@
 
-name: Build ALBYATE APK - Kotlin 2.4.21
+name: Build Android APK
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
 
 jobs:
   build:
-    name: Build Android APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -22,9 +24,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
-      - name: Install Flutter stable
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -34,53 +35,70 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="ALBYATE_v0_3_2_KOTLIN_2_4_21_FIX.zip"
 
-          if [[ ! -f "$ZIP" ]]; then
-            echo "ERROR: ZIP not found: $ZIP"
-            ls -la
+          mapfile -t zips < <(
+            find . -maxdepth 1 -type f \
+              -name 'ALBYATE*.zip' \
+              ! -iname '*apk*' \
+              -print
+          )
+
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "ERROR: Expected exactly one ALBYATE source ZIP."
+            printf '%s\n' "${zips[@]}"
             exit 1
           fi
 
-          SRC_DIR="$RUNNER_TEMP/albyate-zip-source"
-          mkdir -p "$SRC_DIR"
-          unzip -q "$ZIP" -d "$SRC_DIR"
+          ZIP_FILE="${zips[0]}"
+          PROJECT_DIR="$RUNNER_TEMP/albyate-project"
 
-          PUBSPEC_PATH="$(find "$SRC_DIR" -maxdepth 6 -name pubspec.yaml -print -quit)"
+          mkdir -p "$PROJECT_DIR"
+          unzip -q "$ZIP_FILE" -d "$PROJECT_DIR"
 
-          if [[ -z "$PUBSPEC_PATH" ]]; then
-            echo "ERROR: pubspec.yaml not found"
+          PUBSPEC="$(find "$PROJECT_DIR" \
+            -maxdepth 4 -name pubspec.yaml \
+            -print -quit)"
+
+          if [ -z "$PUBSPEC" ]; then
+            echo "ERROR: pubspec.yaml not found."
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$PUBSPEC_PATH")"
+          PROJECT_DIR="$(dirname "$PUBSPEC")"
+
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-          test -d "$PROJECT_DIR/android"
-          test -d "$PROJECT_DIR/lib"
+          echo "Project extracted successfully:"
+          echo "$PROJECT_DIR"
+          ls -la "$PROJECT_DIR"
 
       - name: Restore Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
+          cd "$PROJECT_DIR"
 
-          flutter create --no-pub --platforms=android \
+          TMP_DIR="$(mktemp -d)"
+
+          flutter create \
+            --platforms=android \
             --org com.albyate \
             --project-name albyate_for_solar_inverter \
-            "$RUNNER_TEMP/albyate-wrapper-template"
+            "$TMP_DIR/scaffold"
 
-          mkdir -p "$PROJECT_DIR/android/gradle/wrapper"
+          cp "$TMP_DIR/scaffold/android/gradlew" android/
+          cp "$TMP_DIR/scaffold/android/gradlew.bat" android/
 
-          cp "$RUNNER_TEMP/albyate-wrapper-template/android/gradlew" \
-            "$PROJECT_DIR/android/gradlew"
+          mkdir -p android/gradle/wrapper
 
-          cp "$RUNNER_TEMP/albyate-wrapper-template/android/gradlew.bat" \
-            "$PROJECT_DIR/android/gradlew.bat"
+          cp "$TMP_DIR/scaffold/android/gradle/wrapper/gradle-wrapper.jar" \
+            android/gradle/wrapper/
 
-          cp "$RUNNER_TEMP/albyate-wrapper-template/android/gradle/wrapper/gradle-wrapper.jar" \
-            "$PROJECT_DIR/android/gradle/wrapper/gradle-wrapper.jar"
+          chmod +x android/gradlew
 
-          chmod +x "$PROJECT_DIR/android/gradlew"
+          test -f android/gradle/wrapper/gradle-wrapper.properties
+
+          echo "Gradle Wrapper restored successfully."
 
       - name: Verify Android and Kotlin versions
         shell: bash
@@ -88,12 +106,24 @@ jobs:
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          grep -q 'com.android.application.*8.11.1' android/settings.gradle.kts
-          grep -q 'org.jetbrains.kotlin.android.*2.4.21' android/settings.gradle.kts
-          grep -q 'gradle-8.14-all.zip' android/gradle/wrapper/gradle-wrapper.properties
+          echo "Android and Kotlin configuration:"
 
+          grep -n 'com.android.application' \
+            android/settings.gradle.kts
+
+          grep -n 'org.jetbrains.kotlin.android' \
+            android/settings.gradle.kts
+
+          grep -n 'distributionUrl' \
+            android/gradle/wrapper/gradle-wrapper.properties
+
+          echo "Java version:"
           java -version
+
+          echo "Flutter version:"
           flutter --version
+
+          echo "Gradle version:"
           android/gradlew --version
 
       - name: Install Flutter dependencies
@@ -103,46 +133,33 @@ jobs:
           cd "$PROJECT_DIR"
           flutter pub get
 
-      - name: Record Android dependencies
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          if [[ -n "${PROJECT_DIR:-}" && -d "$PROJECT_DIR/android" ]]; then
-            cd "$PROJECT_DIR/android"
-            ./gradlew :app:dependencies \
-              --configuration debugRuntimeClasspath \
-              > "$RUNNER_TEMP/albyate-android-dependencies.txt" 2>&1
-          fi
-          exit 0
-
       - name: Build debug APK
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd "$PROJECT_DIR"
 
-          flutter build apk --debug \
-            2>&1 | tee "$RUNNER_TEMP/albyate-build.log"
+          flutter build apk --debug
 
-          test -s build/app/outputs/flutter-apk/app-debug.apk
+          test -f build/app/outputs/flutter-apk/app-debug.apk
+
+          echo "APK build completed successfully."
 
       - name: Upload APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-v0.3.2-APK
+          name: ALBYATE-v0.3.2-debug-APK
           path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 14
 
-      - name: Upload diagnostics
-        if: failure()
+      - name: Upload build diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-BUILD-DIAGNOSTICS
+          name: ALBYATE-build-diagnostics
           path: |
-            ${{ runner.temp }}/albyate-build.log
-            ${{ runner.temp }}/albyate-android-dependencies.txt
+            ${{ env.PROJECT_DIR }}/android/settings.gradle.kts
+            ${{ env.PROJECT_DIR }}/android/gradle/wrapper/gradle-wrapper.properties
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 7
