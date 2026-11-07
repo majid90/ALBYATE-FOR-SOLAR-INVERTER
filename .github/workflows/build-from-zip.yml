@@ -39,25 +39,22 @@ jobs:
           mapfile -t zips < <(
             find . -maxdepth 1 -type f \
               -name 'ALBYATE*.zip' \
-              ! -iname '*apk*' \
-              -print
+              ! -iname '*apk*' -print
           )
 
           if [ "${#zips[@]}" -ne 1 ]; then
-            echo "ERROR: Expected exactly one ALBYATE source ZIP."
+            echo "ERROR: Expected exactly one source ZIP."
             printf '%s\n' "${zips[@]}"
             exit 1
           fi
 
-          ZIP_FILE="${zips[0]}"
           PROJECT_DIR="$RUNNER_TEMP/albyate-project"
-
           mkdir -p "$PROJECT_DIR"
-          unzip -q "$ZIP_FILE" -d "$PROJECT_DIR"
+
+          unzip -q "${zips[0]}" -d "$PROJECT_DIR"
 
           PUBSPEC="$(find "$PROJECT_DIR" \
-            -maxdepth 4 -name pubspec.yaml \
-            -print -quit)"
+            -maxdepth 4 -name pubspec.yaml -print -quit)"
 
           if [ -z "$PUBSPEC" ]; then
             echo "ERROR: pubspec.yaml not found."
@@ -65,12 +62,7 @@ jobs:
           fi
 
           PROJECT_DIR="$(dirname "$PUBSPEC")"
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Project extracted successfully:"
-          echo "$PROJECT_DIR"
-          ls -la "$PROJECT_DIR"
 
       - name: Restore Gradle Wrapper
         shell: bash
@@ -96,34 +88,45 @@ jobs:
 
           chmod +x android/gradlew
 
-          test -f android/gradle/wrapper/gradle-wrapper.properties
+          echo "Gradle Wrapper restored."
 
-          echo "Gradle Wrapper restored successfully."
-
-      - name: Verify Android and Kotlin versions
+      - name: Set Gradle 8.14.3
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          echo "Android and Kotlin configuration:"
+          PROPERTIES="android/gradle/wrapper/gradle-wrapper.properties"
 
-          grep -n 'com.android.application' \
-            android/settings.gradle.kts
+          sed -i -E \
+            's#^distributionUrl=.*$#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' \
+            "$PROPERTIES"
 
-          grep -n 'org.jetbrains.kotlin.android' \
-            android/settings.gradle.kts
+          grep 'distributionUrl' "$PROPERTIES"
 
-          grep -n 'distributionUrl' \
-            android/gradle/wrapper/gradle-wrapper.properties
+          grep -q 'gradle-8.14.3-all.zip' "$PROPERTIES"
 
-          echo "Java version:"
+          android/gradlew --version
+
+      - name: Verify Android configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          echo "Android plugin:"
+          grep -n 'com.android.application' android/settings.gradle.kts
+
+          echo "Kotlin plugin:"
+          grep -n 'org.jetbrains.kotlin.android' android/settings.gradle.kts
+
+          echo "Java:"
           java -version
 
-          echo "Flutter version:"
+          echo "Flutter:"
           flutter --version
 
-          echo "Gradle version:"
+          echo "Gradle:"
           android/gradlew --version
 
       - name: Install Flutter dependencies
@@ -143,7 +146,7 @@ jobs:
 
           test -f build/app/outputs/flutter-apk/app-debug.apk
 
-          echo "APK build completed successfully."
+          echo "APK BUILD SUCCESSFUL"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -153,7 +156,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
