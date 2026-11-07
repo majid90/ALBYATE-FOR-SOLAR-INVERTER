@@ -1,3 +1,4 @@
+
 name: Build ALBYATE Android APK
 
 on:
@@ -6,118 +7,145 @@ on:
     branches:
       - main
 
-permissions:
-  contents: read
-
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Install Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Flutter
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Locate or extract Flutter project
-        id: project
+      - name: Extract ALBYATE ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f "pubspec.yaml" ]; then
-            PROJECT_DIR="$GITHUB_WORKSPACE"
-          else
-            mapfile -t ZIP_FILES < <(
-              find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
-                -iname 'ALBYATE*.zip' ! -iname '*apk*' -print
-            )
+          mapfile -t zips < <(
+            find . -maxdepth 1 -type f \
+              -name 'ALBYATE*.zip' \
+              ! -iname '*apk*' -print
+          )
 
-            if [ "${#ZIP_FILES[@]}" -ne 1 ]; then
-              echo "ERROR: Expected exactly one ALBYATE source ZIP in repository root."
-              printf 'Found: %s\n' "${ZIP_FILES[@]:-none}"
-              exit 1
-            fi
-
-            EXTRACT_DIR="$RUNNER_TEMP/albyate-source"
-            mkdir -p "$EXTRACT_DIR"
-            unzip -q "${ZIP_FILES[0]}" -d "$EXTRACT_DIR"
-
-            PUBSPEC_PATH="$(find "$EXTRACT_DIR" -maxdepth 5 -type f -name pubspec.yaml -print -quit)"
-            if [ -z "$PUBSPEC_PATH" ]; then
-              echo "ERROR: pubspec.yaml was not found inside the ZIP."
-              exit 1
-            fi
-            PROJECT_DIR="$(dirname "$PUBSPEC_PATH")"
+          if [ "${#zips[@]}" -ne 1 ]; then
+            echo "ERROR: Expected one source ZIP."
+            printf '%s\n' "${zips[@]}"
+            exit 1
           fi
 
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Using Flutter project: $PROJECT_DIR"
-          test -f "$PROJECT_DIR/pubspec.yaml"
-          test -f "$PROJECT_DIR/android/settings.gradle.kts"
+          PROJECT_DIR="$RUNNER_TEMP/albyate-project"
+          mkdir -p "$PROJECT_DIR"
 
-      - name: Configure Gradle wrapper and Android compatibility
+          unzip -q "${zips[0]}" -d "$PROJECT_DIR"
+
+          PUBSPEC="$(find "$PROJECT_DIR" \
+            -maxdepth 5 -name pubspec.yaml -print -quit)"
+
+          if [ -z "$PUBSPEC" ]; then
+            echo "ERROR: pubspec.yaml not found."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PUBSPEC")"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Restore Gradle Wrapper
         shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          WRAPPER_DIR="android/gradle/wrapper"
-          mkdir -p "$WRAPPER_DIR"
+          TMP_DIR="$(mktemp -d)"
 
-          if [ ! -f android/gradlew ] || [ ! -f "$WRAPPER_DIR/gradle-wrapper.jar" ]; then
-            TMP_DIR="$(mktemp -d)"
-            flutter create \
-              --platforms=android \
-              --org com.albyate \
-              --project-name albyate_for_solar_inverter \
-              "$TMP_DIR/scaffold"
-            cp "$TMP_DIR/scaffold/android/gradlew" android/gradlew
-            cp "$TMP_DIR/scaffold/android/gradlew.bat" android/gradlew.bat
-            cp "$TMP_DIR/scaffold/android/gradle/wrapper/gradle-wrapper.jar" "$WRAPPER_DIR/gradle-wrapper.jar"
-            chmod +x android/gradlew
-          fi
+          flutter create \
+            --platforms=android \
+            --org com.albyate \
+            --project-name albyate_for_solar_inverter \
+            "$TMP_DIR/scaffold"
 
-          if [ ! -f "$WRAPPER_DIR/gradle-wrapper.properties" ]; then
-            echo "ERROR: gradle-wrapper.properties is missing."
-            exit 1
-          fi
+          mkdir -p android/gradle/wrapper
+
+          cp "$TMP_DIR/scaffold/android/gradlew" android/
+          cp "$TMP_DIR/scaffold/android/gradlew.bat" android/
+
+          cp -a \
+            "$TMP_DIR/scaffold/android/gradle/wrapper/." \
+            android/gradle/wrapper/
+
+          chmod +x android/gradlew
+
+          test -f android/gradle/wrapper/gradle-wrapper.jar
+          test -f android/gradle/wrapper/gradle-wrapper.properties
+
+          echo "Gradle Wrapper restored successfully."
+
+      - name: Set Gradle 8.14.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          FILE="android/gradle/wrapper/gradle-wrapper.properties"
 
           sed -i -E \
             's#^distributionUrl=.*$#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' \
-            "$WRAPPER_DIR/gradle-wrapper.properties"
+            "$FILE"
 
-          GRADLE_PROPERTIES="android/gradle.properties"
-          touch "$GRADLE_PROPERTIES"
-          if grep -q '^android.newDsl=' "$GRADLE_PROPERTIES"; then
-            sed -i 's/^android.newDsl=.*/android.newDsl=false/' "$GRADLE_PROPERTIES"
+          grep 'distributionUrl' "$FILE"
+
+          android/gradlew --version
+
+      - name: Configure Android DSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          FILE="android/gradle.properties"
+          touch "$FILE"
+
+          if grep -q '^android.newDsl=' "$FILE"; then
+            sed -i 's/^android.newDsl=.*/android.newDsl=false/' "$FILE"
           else
-            printf '\nandroid.newDsl=false\n' >> "$GRADLE_PROPERTIES"
+            echo 'android.newDsl=false' >> "$FILE"
           fi
 
-          chmod +x android/gradlew
-          echo "--- Gradle wrapper ---"
-          grep '^distributionUrl=' "$WRAPPER_DIR/gradle-wrapper.properties"
-          echo "--- Android Gradle properties ---"
-          cat "$GRADLE_PROPERTIES"
+          cat "$FILE"
 
-      - name: Install Flutter dependencies
+      - name: Verify Android files
         shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          test -f android/settings.gradle.kts
+          test -f android/app/build.gradle.kts
+          test -f android/gradle/wrapper/gradle-wrapper.properties
+
+          echo "Android Gradle configuration:"
+          grep -n 'com.android.application' android/settings.gradle.kts
+          grep -n 'org.jetbrains.kotlin.android' android/settings.gradle.kts
+
+          java -version
+          flutter --version
+
+      - name: Install dependencies
+        shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
@@ -125,8 +153,6 @@ jobs:
 
       - name: Analyze Flutter project
         shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
@@ -134,30 +160,32 @@ jobs:
 
       - name: Build debug APK
         shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
-          flutter build apk --debug --no-pub -v
-          test -s build/app/outputs/flutter-apk/app-debug.apk
 
-      - name: Upload installable APK
+          flutter build apk --debug
+
+          test -f build/app/outputs/flutter-apk/app-debug.apk
+
+          echo "APK BUILD SUCCESSFUL"
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ALBYATE-v0.3.2-debug-APK
-          path: ${{ steps.project.outputs.project_dir }}/build/app/outputs/flutter-apk/app-debug.apk
+          path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
-        if: failure()
+      - name: Upload diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ALBYATE-build-diagnostics
           path: |
-            ${{ steps.project.outputs.project_dir }}/android/settings.gradle.kts
-            ${{ steps.project.outputs.project_dir }}/android/gradle.properties
-            ${{ steps.project.outputs.project_dir }}/android/gradle/wrapper/gradle-wrapper.properties
+            ${{ env.PROJECT_DIR }}/android/settings.gradle.kts
+            ${{ env.PROJECT_DIR }}/android/gradle.properties
+            ${{ env.PROJECT_DIR }}/android/gradle/wrapper/gradle-wrapper.properties
           if-no-files-found: ignore
           retention-days: 7
