@@ -1,30 +1,163 @@
-
-name: Build ALBYATE APK
+name: Build ALBYATE Android APK
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Prepare Android project
+
+      - name: Locate or extract Flutter project
+        id: project
+        shell: bash
         run: |
-          flutter create . --platforms=android --project-name albyate_for_solar_inverter --org com.albyate
+          set -euo pipefail
+
+          if [ -f "pubspec.yaml" ]; then
+            PROJECT_DIR="$GITHUB_WORKSPACE"
+          else
+            mapfile -t ZIP_FILES < <(
+              find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
+                -iname 'ALBYATE*.zip' ! -iname '*apk*' -print
+            )
+
+            if [ "${#ZIP_FILES[@]}" -ne 1 ]; then
+              echo "ERROR: Expected exactly one ALBYATE source ZIP in repository root."
+              printf 'Found: %s\n' "${ZIP_FILES[@]:-none}"
+              exit 1
+            fi
+
+            EXTRACT_DIR="$RUNNER_TEMP/albyate-source"
+            mkdir -p "$EXTRACT_DIR"
+            unzip -q "${ZIP_FILES[0]}" -d "$EXTRACT_DIR"
+
+            PUBSPEC_PATH="$(find "$EXTRACT_DIR" -maxdepth 5 -type f -name pubspec.yaml -print -quit)"
+            if [ -z "$PUBSPEC_PATH" ]; then
+              echo "ERROR: pubspec.yaml was not found inside the ZIP."
+              exit 1
+            fi
+            PROJECT_DIR="$(dirname "$PUBSPEC_PATH")"
+          fi
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using Flutter project: $PROJECT_DIR"
+          test -f "$PROJECT_DIR/pubspec.yaml"
+          test -f "$PROJECT_DIR/android/settings.gradle.kts"
+
+      - name: Configure Gradle wrapper and Android compatibility
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          WRAPPER_DIR="android/gradle/wrapper"
+          mkdir -p "$WRAPPER_DIR"
+
+          if [ ! -f android/gradlew ] || [ ! -f "$WRAPPER_DIR/gradle-wrapper.jar" ]; then
+            TMP_DIR="$(mktemp -d)"
+            flutter create \
+              --platforms=android \
+              --org com.albyate \
+              --project-name albyate_for_solar_inverter \
+              "$TMP_DIR/scaffold"
+            cp "$TMP_DIR/scaffold/android/gradlew" android/gradlew
+            cp "$TMP_DIR/scaffold/android/gradlew.bat" android/gradlew.bat
+            cp "$TMP_DIR/scaffold/android/gradle/wrapper/gradle-wrapper.jar" "$WRAPPER_DIR/gradle-wrapper.jar"
+            chmod +x android/gradlew
+          fi
+
+          if [ ! -f "$WRAPPER_DIR/gradle-wrapper.properties" ]; then
+            echo "ERROR: gradle-wrapper.properties is missing."
+            exit 1
+          fi
+
+          sed -i -E \
+            's#^distributionUrl=.*$#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' \
+            "$WRAPPER_DIR/gradle-wrapper.properties"
+
+          GRADLE_PROPERTIES="android/gradle.properties"
+          touch "$GRADLE_PROPERTIES"
+          if grep -q '^android.newDsl=' "$GRADLE_PROPERTIES"; then
+            sed -i 's/^android.newDsl=.*/android.newDsl=false/' "$GRADLE_PROPERTIES"
+          else
+            printf '\nandroid.newDsl=false\n' >> "$GRADLE_PROPERTIES"
+          fi
+
+          chmod +x android/gradlew
+          echo "--- Gradle wrapper ---"
+          grep '^distributionUrl=' "$WRAPPER_DIR/gradle-wrapper.properties"
+          echo "--- Android Gradle properties ---"
+          cat "$GRADLE_PROPERTIES"
+
+      - name: Install Flutter dependencies
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
           flutter pub get
+
+      - name: Analyze Flutter project
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          flutter analyze --no-pub
+
       - name: Build debug APK
-        run: flutter build apk --debug
-      - uses: actions/upload-artifact@v4
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          flutter build apk --debug --no-pub -v
+          test -s build/app/outputs/flutter-apk/app-debug.apk
+
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
         with:
-          name: ALBYATE-debug-APK
-          path: build/app/outputs/flutter-apk/app-debug.apk
-  
+          name: ALBYATE-v0.3.2-debug-APK
+          path: ${{ steps.project.outputs.project_dir }}/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALBYATE-build-diagnostics
+          path: |
+            ${{ steps.project.outputs.project_dir }}/android/settings.gradle.kts
+            ${{ steps.project.outputs.project_dir }}/android/gradle.properties
+            ${{ steps.project.outputs.project_dir }}/android/gradle/wrapper/gradle-wrapper.properties
+          if-no-files-found: ignore
+          retention-days: 7
