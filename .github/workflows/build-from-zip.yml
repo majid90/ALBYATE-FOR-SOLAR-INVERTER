@@ -1,5 +1,5 @@
 
-name: Build Android APK
+name: Build ALBYATE Android APK
 
 on:
   workflow_dispatch:
@@ -88,25 +88,38 @@ jobs:
 
           chmod +x android/gradlew
 
-          echo "Gradle Wrapper restored."
-
       - name: Set Gradle 8.14.3
         shell: bash
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          PROPERTIES="android/gradle/wrapper/gradle-wrapper.properties"
+          FILE="android/gradle/wrapper/gradle-wrapper.properties"
 
           sed -i -E \
             's#^distributionUrl=.*$#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' \
-            "$PROPERTIES"
+            "$FILE"
 
-          grep 'distributionUrl' "$PROPERTIES"
-
-          grep -q 'gradle-8.14.3-all.zip' "$PROPERTIES"
+          grep 'distributionUrl' "$FILE"
 
           android/gradlew --version
+
+      - name: Fix Android New DSL compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          FILE="android/gradle.properties"
+          touch "$FILE"
+
+          if grep -q '^android.newDsl=' "$FILE"; then
+            sed -i 's/^android.newDsl=.*/android.newDsl=false/' "$FILE"
+          else
+            echo 'android.newDsl=false' >> "$FILE"
+          fi
+
+          cat "$FILE"
 
       - name: Verify Android configuration
         shell: bash
@@ -114,19 +127,14 @@ jobs:
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          echo "Android plugin:"
-          grep -n 'com.android.application' android/settings.gradle.kts
+          echo "Android configuration:"
+          cat android/settings.gradle.kts
 
-          echo "Kotlin plugin:"
-          grep -n 'org.jetbrains.kotlin.android' android/settings.gradle.kts
+          echo "Gradle configuration:"
+          cat android/gradle/wrapper/gradle-wrapper.properties
 
-          echo "Java:"
           java -version
-
-          echo "Flutter:"
           flutter --version
-
-          echo "Gradle:"
           android/gradlew --version
 
       - name: Install Flutter dependencies
@@ -134,6 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
+
           flutter pub get
 
       - name: Build debug APK
@@ -142,7 +151,7 @@ jobs:
           set -euo pipefail
           cd "$PROJECT_DIR"
 
-          flutter build apk --debug
+          flutter build apk --debug -v
 
           test -f build/app/outputs/flutter-apk/app-debug.apk
 
@@ -163,6 +172,7 @@ jobs:
           name: ALBYATE-build-diagnostics
           path: |
             ${{ env.PROJECT_DIR }}/android/settings.gradle.kts
+            ${{ env.PROJECT_DIR }}/android/gradle.properties
             ${{ env.PROJECT_DIR }}/android/gradle/wrapper/gradle-wrapper.properties
           if-no-files-found: ignore
           retention-days: 7
