@@ -4,8 +4,7 @@ name: Build ALBYATE Android APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -31,7 +30,7 @@ jobs:
           flutter-version: '3.38.9'
           cache: true
 
-      - name: Locate or extract ALBYATE project
+      - name: Find and extract ALBYATE source
         id: project
         shell: bash
         run: |
@@ -39,13 +38,10 @@ jobs:
           if [[ -f "$GITHUB_WORKSPACE/pubspec.yaml" ]]; then
             PROJECT_DIR="$GITHUB_WORKSPACE"
           else
-            mapfile -t ZIP_FILES < <(
-              find "$GITHUB_WORKSPACE" -maxdepth 1 -type f \
-                -iname 'ALBYATE*.zip' ! -iname '*apk*' -print
-            )
+            mapfile -t ZIP_FILES < <(find "$GITHUB_WORKSPACE" -maxdepth 1 -type f -iname 'ALBYATE*.zip' ! -iname '*apk*' -print)
             if [[ ${#ZIP_FILES[@]} -ne 1 ]]; then
-              echo "ERROR: Expected exactly one ALBYATE source ZIP."
-              printf 'Found: %s\n' "${ZIP_FILES[@]:-none}"
+              echo "ERROR: Put exactly one ALBYATE source ZIP in the repository root."
+              printf '%s\n' "${ZIP_FILES[@]:-No ZIP found}"
               exit 1
             fi
             EXTRACT_DIR="$RUNNER_TEMP/albyate-source"
@@ -58,13 +54,12 @@ jobs:
             fi
             PROJECT_DIR="$(dirname "$PUBSPEC_PATH")"
           fi
-          if [[ ! -d "$PROJECT_DIR/android" ]]; then
-            echo "ERROR: Android project directory not found."
-            exit 1
-          fi
+          [[ -f "$PROJECT_DIR/android/settings.gradle.kts" ]]
+          [[ -f "$PROJECT_DIR/android/app/build.gradle.kts" ]]
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using project: $PROJECT_DIR"
 
-      - name: Repair Gradle Wrapper
+      - name: Restore missing Gradle Wrapper files
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
@@ -73,30 +68,44 @@ jobs:
           cd "$PROJECT_DIR"
           WRAPPER_DIR="android/gradle/wrapper"
           mkdir -p "$WRAPPER_DIR"
-          if [[ ! -f android/gradlew || ! -f "$WRAPPER_DIR/gradle-wrapper.jar" || ! -f "$WRAPPER_DIR/gradle-wrapper.properties" ]]; then
+          if [[ ! -s android/gradlew || ! -s "$WRAPPER_DIR/gradle-wrapper.jar" || ! -s "$WRAPPER_DIR/gradle-wrapper.properties" ]]; then
             TMP_DIR="$(mktemp -d)"
-            flutter create --platforms=android --org com.albyate --project-name albyate_for_solar_inverter "$TMP_DIR/scaffold"
-            cp "$TMP_DIR/scaffold/android/gradlew" android/gradlew
-            cp "$TMP_DIR/scaffold/android/gradle/wrapper/gradle-wrapper.jar" "$WRAPPER_DIR/"
-            cp "$TMP_DIR/scaffold/android/gradle/wrapper/gradle-wrapper.properties" "$WRAPPER_DIR/"
+            flutter create --platforms=android --org com.albyate --project-name albyate_wrapper_template "$TMP_DIR/template"
+            cp "$TMP_DIR/template/android/gradlew" android/gradlew
+            cp "$TMP_DIR/template/android/gradlew.bat" android/gradlew.bat
+            cp "$TMP_DIR/template/android/gradle/wrapper/gradle-wrapper.jar" "$WRAPPER_DIR/gradle-wrapper.jar"
+            cp "$TMP_DIR/template/android/gradle/wrapper/gradle-wrapper.properties" "$WRAPPER_DIR/gradle-wrapper.properties"
           fi
-          sed -i -E 's#^distributionUrl=.*$#distributionUrl=https\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' "$WRAPPER_DIR/gradle-wrapper.properties"
+          sed -i -E 's#^distributionUrl=.*$#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-all.zip#' "$WRAPPER_DIR/gradle-wrapper.properties"
           chmod +x android/gradlew
+          test -s android/gradlew
           test -s "$WRAPPER_DIR/gradle-wrapper.jar"
           test -s "$WRAPPER_DIR/gradle-wrapper.properties"
-          grep -E 'com.android.application|org.jetbrains.kotlin.android' android/settings.gradle.kts
 
-      - name: Install Flutter dependencies
+      - name: Verify Android versions
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           cd "$PROJECT_DIR"
+          grep -q 'com.android.application.*8.11.1' android/settings.gradle.kts
+          grep -q 'org.jetbrains.kotlin.android.*2.1.0' android/settings.gradle.kts
+          grep -q 'gradle-8.14.3-all.zip' android/gradle/wrapper/gradle-wrapper.properties
+          echo "Android versions verified."
+          java -version
           flutter --version
+
+      - name: Get Flutter packages
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
           flutter pub get
 
-      - name: Analyze Flutter project
+      - name: Run Flutter analyzer
         continue-on-error: true
         shell: bash
         env:
@@ -110,12 +119,13 @@ jobs:
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd "$PROJECT_DIR"
           flutter build apk --debug --no-pub --verbose 2>&1 | tee "$RUNNER_TEMP/albyate-build.log"
           test -s build/app/outputs/flutter-apk/app-debug.apk
+          echo "APK BUILD SUCCESSFUL"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ALBYATE-v0.3.2-debug-APK
